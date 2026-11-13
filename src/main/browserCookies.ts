@@ -492,7 +492,7 @@ const readDirectFirefoxCookieDatabase = (cookiePath: string): CookieDatabase<Fir
     )
     const requiredColumns = ['name', 'value', 'host', 'path', 'expiry', 'isSecure', 'isHttpOnly']
     if (requiredColumns.some((column) => !columns.has(column))) {
-      throw new Error('Unsupported Firefox cookie database')
+      throw new Error('Unsupported cookie database')
     }
 
     const selectedColumns = [
@@ -587,7 +587,7 @@ const readDirectChromeCookieDatabase = (cookiePath: string): CookieDatabase<Chro
     )
     const requiredColumns = ['host_key', 'name', 'path', 'expires_utc', 'is_secure', 'is_httponly']
     if (requiredColumns.some((column) => !columns.has(column))) {
-      throw new Error('Unsupported Chrome cookie database')
+      throw new Error('Unsupported cookie database')
     }
 
     const selectedColumns = [
@@ -690,38 +690,23 @@ const readTargetCookieDatabase = async <TRow>(
   }
 }
 
-const readFirefoxCookies = async (
-  profile: RegisteredBrowserProfile
-): Promise<CookieDatabase<FirefoxCookieRow>> =>
-  (await shouldUseDirectAccess(profile.container))
-    ? readCookieDatabaseSnapshot(profile.cookiePath, readDirectFirefoxCookieDatabase)
-    : readTargetCookieDatabase(
-        profile,
-        firefoxCookieReaderScript,
-        'schemaVersion',
-        firefoxCookieRowFields
-      )
-
-const readChromeCookies = async (
-  profile: RegisteredBrowserProfile
-): Promise<CookieDatabase<ChromeCookieRow>> => {
-  if (await shouldUseDirectAccess(profile.container)) {
-    try {
-      return await readCookieDatabaseSnapshot(profile.cookiePath, readDirectChromeCookieDatabase)
-    } catch (error) {
-      throw getCookieDatabaseReadError(
-        'Chrome',
-        error instanceof Error ? error.message : 'unknown database error'
-      )
-    }
+const readCookies = async <TRow>(
+  profile: RegisteredBrowserProfile,
+  readDirect: (snapshotPath: string) => CookieDatabase<TRow>,
+  readerScript: string,
+  versionKey: 'databaseVersion' | 'schemaVersion',
+  fields: CookieRowFields<TRow>
+): Promise<CookieDatabase<TRow>> => {
+  if (!(await shouldUseDirectAccess(profile.container)))
+    return readTargetCookieDatabase(profile, readerScript, versionKey, fields)
+  try {
+    return await readCookieDatabaseSnapshot(profile.cookiePath, readDirect)
+  } catch (error) {
+    throw getCookieDatabaseReadError(
+      getBrowserName(profile.browser),
+      error instanceof Error ? error.message : 'unknown database error'
+    )
   }
-
-  return readTargetCookieDatabase(
-    profile,
-    chromeCookieReaderScript,
-    'databaseVersion',
-    chromeCookieRowFields
-  )
 }
 
 const getChromeCookieProtectionTag = (cookie: ChromeCookieRow): string | null => {
@@ -909,7 +894,13 @@ export const importBrowserCookies = async (
   }
 
   if (options.browser === 'chrome') {
-    const source = await readChromeCookies(profile)
+    const source = await readCookies(
+      profile,
+      readDirectChromeCookieDatabase,
+      chromeCookieReaderScript,
+      'databaseVersion',
+      chromeCookieRowFields
+    )
     const decryptionKeys = await getChromeCookieDecryptionKeys(source, profile)
     const preparedCookies = source.cookies.map((chromeCookie) => ({
       chromeCookie,
@@ -932,6 +923,12 @@ export const importBrowserCookies = async (
     )
   }
 
-  const source = await readFirefoxCookies(profile)
+  const source = await readCookies(
+    profile,
+    readDirectFirefoxCookieDatabase,
+    firefoxCookieReaderScript,
+    'schemaVersion',
+    firefoxCookieRowFields
+  )
   return storeCookies(source.cookies, (cookie) => convertFirefoxCookie(cookie, source.version))
 }
